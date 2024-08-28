@@ -1,6 +1,9 @@
 use clap::Parser;
 use colored::*;
-use reqwest::blocking::Client;
+use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
+use platform_dirs::AppDirs;
+use reqwest::Client;
+use reqwest_middleware::{self, ClientWithMiddleware};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -24,6 +27,8 @@ struct Cli {
 enum AppError {
     #[error("HTTP request failed: {0}")]
     RequestFailed(#[from] reqwest::Error),
+    #[error("HTTP request failed: {0}")]
+    MiddleWareRequestFailed(#[from] reqwest_middleware::Error),
     #[error("License data is missing or malformed")]
     MalformedLicenseData,
     #[error("License not found for SPDX identifier: {0}")]
@@ -61,13 +66,17 @@ fn fuzzy_find_license(licenses: Vec<Value>) -> Result<Option<Value>, AppError> {
         )),
     }
 }
-fn fetch_license_details(url: &str) -> Result<Value, AppError> {
-    let client = Client::new();
+async fn fetch_license_details(
+    client: &ClientWithMiddleware,
+    url: &str,
+) -> Result<Value, AppError> {
     client
         .get(url)
         .send()
-        .map_err(AppError::RequestFailed)?
+        .await
+        .map_err(AppError::MiddleWareRequestFailed)?
         .json()
+        .await
         .map_err(AppError::RequestFailed)
 }
 
@@ -133,15 +142,28 @@ fn display_preview(license_details: &Value, full_text: bool) {
     }
 }
 
-fn main() -> Result<(), AppError> {
+#[tokio::main]
+async fn main() -> Result<(), AppError> {
     let args = Cli::parse();
 
-    let client = Client::new();
+    let client = reqwest_middleware::ClientBuilder::new(Client::new())
+        .with(Cache(HttpCache {
+            mode: CacheMode::Default,
+            manager: CACacheManager {
+                path: AppDirs::new(Some("license-cli"), true)
+                    .expect("Failed to get cache directory")
+                    .cache_dir,
+            },
+            options: HttpCacheOptions::default(),
+        }))
+        .build();
     let licenses_json: Value = client
         .get("https://spdx.org/licenses/licenses.json")
         .send()
-        .map_err(AppError::RequestFailed)?
+        .await
+        .map_err(AppError::MiddleWareRequestFailed)?
         .json()
+        .await
         .map_err(AppError::RequestFailed)?;
     let licenses = licenses_json["licenses"]
         .as_array()
@@ -162,7 +184,7 @@ fn main() -> Result<(), AppError> {
         .ok_or(AppError::MalformedLicenseData)?;
 
     println!("{}", "Fetching license details...".yellow());
-    let license_details = fetch_license_details(details_url)?;
+    let license_details = fetch_license_details(&client, details_url).await?;
 
     display_preview(&license_details, args.full_text);
 
