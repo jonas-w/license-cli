@@ -1,16 +1,18 @@
-use clap::{Args, Parser};
+use clap::Parser;
 use colored::*;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
+use std::thread::spawn;
 use thiserror::Error;
 
+use nucleo_picker::Picker;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// The SPDX identifier of the license
-    spdx_identifier: String,
+    spdx_identifier: Option<String>,
 
     /// Output full license text to file
     #[arg(short, long, value_name = "FILE")]
@@ -29,7 +31,36 @@ enum AppError {
     #[error("Failed to write to file: {0}")]
     FileWriteError(#[from] std::io::Error),
 }
+fn fuzzy_find_license(licenses: Vec<Value>) -> Result<Option<Value>, AppError> {
+    let mut picker = Picker::default();
 
+    let injector = picker.injector();
+    spawn(move || {
+        for license in licenses.into_iter() {
+            injector.push(license, |e, cols| {
+                cols[0] = format!(
+                    "{} - {}",
+                    e["licenseId"].as_str().unwrap_or("Malformed license"),
+                    e["name"].as_str().unwrap_or("Malformed license")
+                )
+                .into();
+            });
+        }
+    });
+
+    match picker.pick() {
+        Ok(picked) => {
+            if let Some(maybe_spdx) = picked {
+                Ok(Some(maybe_spdx.to_owned().to_owned()))
+            } else {
+                Ok(None)
+            }
+        }
+        Err(_) => Err(AppError::LicenseNotFound(
+            "No License selected.".to_string(),
+        )),
+    }
+}
 fn fetch_license_details(url: &str) -> Result<Value, AppError> {
     let client = Client::new();
     client
@@ -104,7 +135,6 @@ fn display_preview(license_details: &Value, full_text: bool) {
 
 fn main() -> Result<(), AppError> {
     let args = Cli::parse();
-    let spdx_identifier = args.spdx_identifier;
 
     let client = Client::new();
     let licenses_json: Value = client
@@ -113,15 +143,19 @@ fn main() -> Result<(), AppError> {
         .map_err(AppError::RequestFailed)?
         .json()
         .map_err(AppError::RequestFailed)?;
-
     let licenses = licenses_json["licenses"]
         .as_array()
         .ok_or(AppError::MalformedLicenseData)?;
 
-    let license = licenses
-        .iter()
-        .find(|&license| license["licenseId"].as_str() == Some(&spdx_identifier))
-        .ok_or_else(|| AppError::LicenseNotFound(spdx_identifier.clone()))?;
+    let license = if let Some(spdx_identifier) = args.spdx_identifier {
+        licenses
+            .iter()
+            .find(|&license| license["licenseId"].as_str() == Some(&spdx_identifier))
+            .ok_or_else(|| AppError::LicenseNotFound(spdx_identifier.clone()))?
+            .to_owned()
+    } else {
+        fuzzy_find_license(licenses.to_owned())?.expect("No license selected")
+    };
 
     let details_url = license["detailsUrl"]
         .as_str()
