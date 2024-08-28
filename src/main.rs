@@ -1,4 +1,5 @@
 use clap::Parser;
+use colored::*;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use thiserror::Error;
@@ -58,38 +59,62 @@ fn main() -> Result<(), AppError> {
     println!("Fetching license details...");
     let license_details = fetch_license_details(details_url)?;
 
-    println!("\nLicense Preview:");
-    println!("----------------");
+    println!("\n{}", "License Preview:".green().bold());
+    println!("{}", "----------------".green());
+
     println!(
-        "Name: {}",
-        license_details["name"].as_str().unwrap_or("N/A")
+        "{}: {}",
+        "Name".cyan().bold(),
+        license_details["name"].as_str().unwrap_or("N/A").white()
     );
     println!(
-        "SPDX ID: {}",
-        license_details["licenseId"].as_str().unwrap_or("N/A")
+        "{}: {}",
+        "SPDX ID".cyan().bold(),
+        license_details["licenseId"]
+            .as_str()
+            .unwrap_or("N/A")
+            .white()
     );
     println!(
-        "Is OSI Approved: {}",
-        license_details["isOsiApproved"].as_bool().unwrap_or(false)
+        "{}: {}",
+        "Is OSI Approved".cyan().bold(),
+        if license_details["isOsiApproved"].as_bool().unwrap_or(false) {
+            "Yes".green()
+        } else {
+            "No".red()
+        }
     );
 
     if let Some(deprecated) = license_details["isDeprecatedLicenseId"].as_bool() {
-        println!("Deprecated: {}", deprecated);
+        println!(
+            "{}: {}",
+            "Deprecated".cyan().bold(),
+            if deprecated {
+                "Yes".red()
+            } else {
+                "No".green()
+            }
+        );
     }
 
     if let Some(see_also) = license_details["seeAlso"].as_array() {
-        println!("See Also:");
+        println!("{}", "See Also:".cyan().bold());
         for url in see_also {
-            println!("  - {}", url.as_str().unwrap_or("N/A"));
+            println!("  - {}", url.as_str().unwrap_or("N/A").blue().underline());
         }
     }
 
-    println!("\nLicense Text Preview (first 200 characters):");
+    println!(
+        "\n{}",
+        "License Text Preview (first 200 characters):"
+            .green()
+            .bold()
+    );
     if let Some(text) = license_details["licenseText"].as_str() {
-        println!("{}", text.chars().take(200).collect::<String>());
-        println!("...");
+        println!("{}", text.chars().take(200).collect::<String>().italic());
+        println!("{}", "...".bright_black());
     } else {
-        println!("License text not available");
+        println!("{}", "License text not available".red());
     }
 
     Ok(())
